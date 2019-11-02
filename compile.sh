@@ -7,4 +7,4 @@ cd ..
 /usr/local/opt/llvm/bin/clang -c extras.c
 /usr/local/opt/llvm/bin/clang extras.o test_pass.o -o test.bin
 ./test.bin
-# rm *.ll *.o *.bin
+rm *.ll *.o *.bin

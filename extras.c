@@ -2,23 +2,65 @@
 #include <stdlib.h>
 #include <string.h>
 
-int* edge_table;
-int num_edges;
+typedef struct table_entry {
+   int* table;
+   int n;
+   char* func_name;
+   struct table_entry* next;
+} table_entry;
 
-void init_edge_table(long long n) {
-    num_edges = n;
-    edge_table = (int*)malloc(num_edges * sizeof(int));
-    memset(edge_table, 0, num_edges * sizeof(int));
+table_entry* first = NULL;
+table_entry* last = NULL;
+
+void* init_edge_table(int size, char* func_name) {
+    printf("init table for %s\n", func_name);
+    table_entry* entry = malloc(sizeof(table_entry));
+    int* table = malloc(size*sizeof(int));
+    memset(table, 0, size * sizeof(int));
+
+    // init data
+    entry->table = table;
+    entry->n = size;
+    entry->func_name = func_name;
+    entry->next = NULL;
+
+    // insert into ll
+    if (first == NULL) {
+        first = entry;
+        last = entry;
+    } else {
+        last->next = entry;
+        last = entry;
+    }
+    return entry;
 }
 
-void took_edge(long long edge) {
-    edge_table[edge]++;
+void inc_table_entry(table_entry* entry, int i) {
+    entry->table[i]++;
 }
 
 void print_results() {
-    long long i;
-    for (i = 0; i < num_edges; i++) {
-        printf("%lld = %d", i, edge_table[i]);
+    table_entry* next = first;
+    while(next != NULL) {
+        int i;
+        printf("%s:\n", next->func_name);
+        for (i = 0; i < next->n; i++) {
+            printf("\t%d = %d\n", i, next->table[i]);
+        }
+        free(next->table);
+        table_entry* prev = next;
+        next = next->next;
+        free(prev);
     }
-    free(edge_table);
 }
+
+// for each function
+// function var: is_init = false, table
+// if !is_init:
+//    table = create_func_table(func_name, size);
+//    is_init = true
+// elsewhere:
+//   inc_table_entry(table, i)
+
+// create_func_table(size)
+// linked_list of tables, on main return -> print_results
