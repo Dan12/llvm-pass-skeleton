@@ -1,0 +1,10 @@
+int add4(int x) {
+  if (x <= 0) {
+    return 0;
+  }
+  return x + 4;
+}
+
+int main() {
+  return add4(10);
+}

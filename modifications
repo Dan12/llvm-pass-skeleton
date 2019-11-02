@@ -1,0 +1,5 @@
+in build:
+LLVM_DIR=/usr/local/opt/llvm/lib/cmake/llvm cmake ..
+
+to run
+/usr/local/opt/llvm/bin/opt -load build/skeleton/libSkeletonPass.* -skeleton -S test.ll -o test_mul.ll
