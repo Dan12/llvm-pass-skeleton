@@ -13,7 +13,7 @@ table_entry* first = NULL;
 table_entry* last = NULL;
 
 void* init_edge_table(int size, char* func_name) {
-    printf("init table for %s\n", func_name);
+    // printf("init table for %s\n", func_name);
     table_entry* entry = malloc(sizeof(table_entry));
     int* table = malloc(size*sizeof(int));
     memset(table, 0, size * sizeof(int));
@@ -36,6 +36,7 @@ void* init_edge_table(int size, char* func_name) {
 }
 
 void inc_table_entry(table_entry* entry, int i) {
+    // printf("increment entry %d of %s\n", i, entry->func_name);
     entry->table[i]++;
 }
 

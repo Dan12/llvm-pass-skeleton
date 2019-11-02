@@ -120,13 +120,14 @@ Function* get_inc_table_entry_func(LLVMContext &context, Module* module) {
   return inc_table_entry_func;
 }
 
-void insert_edge_counter(Function* F, BasicBlock* from_block, BasicBlock* to_block, Value* table, int edge_idx) {
+void insert_edge_counter(Function* F, BasicBlock* from_block, BasicBlock* to_block, Value* table_ptr, int edge_idx) {
   auto &context = F->getContext();
   Module* module = F->getParent();
   BasicBlock* block = BasicBlock::Create(context, "", F, to_block);
   IRBuilder<> builder(block);
   auto inc_table_entry = get_inc_table_entry_func(context, module);
   std::vector<Value*> args;
+  auto table = builder.CreateLoad(table_ptr);
   args.push_back(table);
   auto idx = ConstantInt::get(Type::getInt32Ty(context), edge_idx, false);
   args.push_back(idx);
@@ -146,7 +147,7 @@ void insert_edge_counter(Function* F, BasicBlock* from_block, BasicBlock* to_blo
 // long long block_num = 0;
 // std::string block("block");
 
-void insert_check(Function* F, BasicBlock* entry, int num) {
+Value* insert_check(Function* F, BasicBlock* entry, int num) {
   auto table_var_name = "__" + F->getName() + "_table";
   Module* module = F->getParent();
   auto &context = F->getContext();
@@ -185,7 +186,36 @@ void insert_check(Function* F, BasicBlock* entry, int num) {
   init_builder.CreateStore(table, table_var_ptr);
 
   init_builder.CreateBr(entry);
+
+  return table_var_ptr;
 }
+
+std::vector<std::pair<BasicBlock*, BasicBlock*>> generate_edges(Child_Parent_CFG cfg, Function* F) {
+  std::vector<std::pair<BasicBlock*, BasicBlock*>> edges;
+  for (auto it = cfg.begin(); it != cfg.end(); it++) {
+    auto from_block = it->first;
+    auto children = it->second.first;
+    for (auto child_it = children.begin(); child_it != children.end(); child_it++) {
+      auto to_block = *child_it;
+      std::pair<BasicBlock*, BasicBlock*> edge(from_block, to_block);
+      edges.push_back(edge);
+    }
+  }
+  return edges;
+}
+
+void generate_all_edge_counters(std::vector<std::pair<BasicBlock*, BasicBlock*>> edges, Function* F, Value* table) {
+  int num_edges = 0;
+  for (auto it = edges.begin(); it != edges.end(); it++) {
+    auto from_block = it->first;
+    auto to_block = it->second;
+    errs() << from_block->getName() << " - " << to_block->getName() << " : " << num_edges << "\n";
+    insert_edge_counter(F, from_block, to_block, table, num_edges);
+    num_edges++;
+  }
+}
+
+std::string block = "block";
 
 namespace {
   struct SkeletonPass : public FunctionPass {
@@ -193,14 +223,22 @@ namespace {
     SkeletonPass() : FunctionPass(ID) {}
 
     virtual bool runOnFunction(Function &F) {
-      errs() << "A function " << F.getName() << "\n";
+      errs() << "Function: " << F.getName() << "\n";
 
       auto cfg = generate_child_parent_cfg(F);
       auto entry = get_entry(cfg);
 
+      int block_num = 0;
+      for (auto &B : F) {
+        B.setName(block + std::to_string(block_num++));
+      }
+
       // auto block = insert_block(&F, entry, 3);
 
-      insert_check(&F, entry, 5);
+      auto edges = generate_edges(cfg, &F);
+      auto table_ptr = insert_check(&F, entry, edges.size());
+
+      generate_all_edge_counters(edges, &F, table_ptr);
 
       if (F.getName() == "main") {
         Module* module = F.getParent();
