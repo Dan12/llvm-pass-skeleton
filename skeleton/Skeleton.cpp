@@ -259,7 +259,7 @@ std::vector<BasicBlock*> topological_sort(Child_Parent_CFG cfg, Edge_set edges) 
 }
 
 using Vals = std::unordered_map<BasicBlock*, std::unordered_map<BasicBlock*, int>>;
-Vals generate_vals(std::vector<BasicBlock*> sort, Child_Parent_CFG cfg) {
+std::pair<Vals, int> generate_vals(std::vector<BasicBlock*> sort, Child_Parent_CFG cfg, BasicBlock* entry) {
   Vals val;
   std::unordered_map<BasicBlock*, int> num_paths;
   for (auto rit = sort.rbegin(); rit != sort.rend(); rit++) {
@@ -280,10 +280,31 @@ Vals generate_vals(std::vector<BasicBlock*> sort, Child_Parent_CFG cfg) {
     }
   }
 
-  return val;
+  std::pair<Vals, int> vals_num_paths(val, num_paths[entry]);
+  return vals_num_paths;
 }
 
 using Tree = std::unordered_map<BasicBlock*, std::unordered_set<BasicBlock*>>;
+// return 1 if path from u to v, else return 0
+int exists_path(BasicBlock* u, BasicBlock* v, Tree &tree, std::unordered_set<BasicBlock*> &visited) {
+  if (u == v) {
+    return 1;
+  }
+
+  visited.insert(u);
+  for (auto &next : tree[u]) {
+    // only visit unvisited nodes
+    if (visited.find(next) == visited.end()) {
+      int is_reachable = exists_path(next, v, tree, visited);
+      if (is_reachable == 1) {
+        return 1;
+      }
+    }
+  }
+
+  return 0;
+}
+
 // currently each edge has cost function = 1, so max spanning tree is one with maximum edges
 Tree gen_max_spanning_tree(Edge_set edges, BasicBlock* entry, BasicBlock* exit) {
   // for each edge (u,v) this tree contains (u -> S where v in S and v -> T where u in T)
@@ -297,7 +318,8 @@ Tree gen_max_spanning_tree(Edge_set edges, BasicBlock* entry, BasicBlock* exit) 
     auto u = edge.first;
     auto v = edge.second;
     // if at least one endpoint not in the tree, add the edge to the tree
-    if (tree.find(u) == tree.end() || tree.find(v) == tree.end()) {
+    std::unordered_set<BasicBlock*> visited;
+    if (exists_path(u, v, tree, visited) == 0) {
       tree[u].insert(v);
       tree[v].insert(u);
     }
@@ -373,6 +395,36 @@ void generate_all_edge_counters(Incs incs, Function* F, Value* r_ptr) {
   }
 }
 
+void dfs_path_incs(BasicBlock* u, Child_Parent_CFG cfg, Incs incs, int inc, Twine on_path) {
+  auto new_string = on_path + "," + u->getName();
+  auto children = cfg[u].first;
+  if (children.size() == 0) {
+    errs() << new_string << ":" << inc << "\n";
+  } else {
+    for (auto &child : children) {
+      int new_inc = inc + incs[u][child];
+      dfs_path_incs(child, cfg, incs, new_inc, new_string);
+    }
+  }
+}
+
+void dfs_find_back_edges(BasicBlock* u, Child_Parent_CFG &cfg, std::unordered_map<BasicBlock*, int>& color, Edge_set &back_edges) {
+  // color = 0 is white, 1 = gray, 2 = black
+  color[u] = 1;
+  auto children = cfg[u].first;
+  for (auto &child : children) {
+    if (color[child] != 0) {
+      if (color[child] == 1) {
+        std::pair<BasicBlock*, BasicBlock*> back_edge(u, child);
+        back_edges.push_back(back_edge);
+      }
+    } else {
+      dfs_find_back_edges(child, cfg, color, back_edges);
+    }
+  }
+  color[u] = 2;
+}
+
 std::string block = "block";
 
 namespace {
@@ -383,20 +435,78 @@ namespace {
     virtual bool runOnFunction(Function &F) {
       errs() << "Function: " << F.getName() << "\n";
 
+      int block_num = 0;
+      // assign name to every block
+      for (auto &B : F) {
+        B.setName(block + std::to_string(block_num++));
+      }
+
       auto cfg = generate_child_parent_cfg(F);
       verify_cfg(cfg);
 
       auto entry = get_entry(cfg);
       auto exit = get_exit(cfg);
 
-      int block_num = 0;
-      for (auto &B : F) {
-        B.setName(block + std::to_string(block_num++));
+      std::unordered_map<BasicBlock*, int> color;
+      Edge_set back_edges;
+      dfs_find_back_edges(entry, cfg, color, back_edges);
+      errs() << "back edges:\n";
+      for (auto &edge : back_edges) {
+        errs() << edge.first->getName() << " - " << edge.second->getName() << "\n";
       }
 
-      // auto block = insert_block(&F, entry, 3);
+      Child_Parent_CFG cfg_with_loop_edges;
 
       auto edges = generate_edges(cfg, &F);
+      Edge_set forward_edges;
+      for (auto &edge : edges) {
+        if (std::find(back_edges.begin(), back_edges.end(), edge) != back_edges.end()) {
+          std::pair<BasicBlock*, BasicBlock*> entry_to_head(entry, edge.second);
+          std::pair<BasicBlock*, BasicBlock*> bottom_to_exit(edge.first, exit);
+          forward_edges.push_back(entry_to_head);
+          forward_edges.push_back(bottom_to_exit);
+
+          // update set child and parents
+          auto entry_cp = cfg_with_loop_edges[entry];
+          entry_cp.first.push_back(edge.second);
+          cfg_with_loop_edges[entry] = entry_cp;
+
+          auto loop_head_cp = cfg_with_loop_edges[edge.second];
+          loop_head_cp.second.push_back(entry);
+          cfg_with_loop_edges[edge.second] = loop_head_cp;
+
+          // update child and parents
+          auto loop_bottom_cp = cfg_with_loop_edges[edge.first];
+          loop_bottom_cp.first.push_back(exit);
+          cfg_with_loop_edges[edge.first] = loop_bottom_cp;
+
+          auto exit_cp = cfg_with_loop_edges[exit];
+          exit_cp.second.push_back(edge.first);
+          cfg_with_loop_edges[exit] = exit_cp;
+        } else {
+          forward_edges.push_back(edge);
+
+          // set child
+          auto head_cp = cfg_with_loop_edges[edge.first];
+          head_cp.first.push_back(edge.second);
+          cfg_with_loop_edges[edge.first] = head_cp;
+
+          // set parent
+          auto tail_cp = cfg_with_loop_edges[edge.second];
+          tail_cp.second.push_back(edge.first);
+          cfg_with_loop_edges[edge.second] = tail_cp;
+        }
+      }
+
+      errs() << "edges:\n";
+      for (auto &edge : edges) {
+        errs() << edge.first->getName() << " - " << edge.second->getName() << "\n";
+      }
+
+      errs() << "forward edges:\n";
+      for (auto &edge : forward_edges) {
+        errs() << edge.first->getName() << " - " << edge.second->getName() << "\n";
+      }
 
       auto sort = topological_sort(cfg, edges);
       errs() << "sort:\n";
@@ -404,7 +514,9 @@ namespace {
         errs() << block->getName() << "\n";
       }
 
-      auto vals = generate_vals(sort, cfg);
+      auto vals_num_paths = generate_vals(sort, cfg_with_loop_edges, entry);
+      auto vals = vals_num_paths.first;
+      int num_paths = vals_num_paths.second;
       vals[exit][entry] = 0;
 
       errs() << "vals:\n";
@@ -418,54 +530,58 @@ namespace {
         }
       }
 
-      auto tree = gen_max_spanning_tree(edges, entry, exit);
+      // auto tree = gen_max_spanning_tree(edges, entry, exit);
 
-      errs() << "max spanning tree edges:\n";
-      for (auto sit = tree.begin(); sit != tree.end(); sit++) {
-        auto from_block = sit->first;
-        auto to_blocks = sit->second;
-        for (auto &to_block : to_blocks) {
-          if ((from_block == exit && to_block == entry) || vals[from_block].find(to_block) != vals[from_block].end()) {
-            errs() << from_block->getName() << " - " << to_block->getName() << "\n";
-          }
-        }
-      }
+      // errs() << "max spanning tree edges:\n";
+      // for (auto sit = tree.begin(); sit != tree.end(); sit++) {
+      //   auto from_block = sit->first;
+      //   auto to_blocks = sit->second;
+      //   for (auto &to_block : to_blocks) {
+      //     if ((from_block == exit && to_block == entry) || vals[from_block].find(to_block) != vals[from_block].end()) {
+      //       errs() << from_block->getName() << " - " << to_block->getName() << "\n";
+      //     }
+      //   }
+      // }
 
-      auto incs = generate_incs(edges, vals, tree);
-      errs() << "incs:\n";
-      int num_incs = 0;
-      for (auto sit = incs.begin(); sit != incs.end(); sit++) {
-        auto from_block = sit->first;
-        auto to_blocks = sit->second;
-        for (auto eit = to_blocks.begin(); eit != to_blocks.end(); eit++) {
-          auto to_block = eit->first;
-          int inc = eit->second;
-          num_incs++;
-          errs() << from_block->getName() << " - " << to_block->getName() << " : " << inc << "\n";
-        }
-      }
+      // auto incs = generate_incs(edges, vals, tree);
+      // errs() << "incs:\n";
+      // for (auto sit = incs.begin(); sit != incs.end(); sit++) {
+      //   auto from_block = sit->first;
+      //   auto to_blocks = sit->second;
+      //   for (auto eit = to_blocks.begin(); eit != to_blocks.end(); eit++) {
+      //     auto to_block = eit->first;
+      //     int inc = eit->second;
+      //     errs() << from_block->getName() << " - " << to_block->getName() << " : " << inc << "\n";
+      //   }
+      // }
 
-      auto r_ptr_table_ptr = insert_check(&F, entry, num_incs);
-      auto r_ptr = r_ptr_table_ptr.first;
-      auto table_ptr = r_ptr_table_ptr.second;
+      // // insert the table init check and the r=0 instruction
+      // auto r_ptr_table_ptr = insert_check(&F, entry, num_paths);
+      // auto r_ptr = r_ptr_table_ptr.first;
+      // auto table_ptr = r_ptr_table_ptr.second;
 
-      generate_all_edge_counters(incs, &F, r_ptr);
+      // // insert the index increments
+      // generate_all_edge_counters(incs, &F, r_ptr);
 
-      insert_path_counter(&F, exit, table_ptr, r_ptr);
+      // // insert the path incrementer at the exit node
+      // insert_path_counter(&F, exit, table_ptr, r_ptr);
 
-      if (F.getName() == "main") {
-        Module* module = F.getParent();
-        auto &context = F.getContext();
-        for (auto &B : F) {
-          Instruction* t = B.getTerminator();
-          if (auto *op = dyn_cast<ReturnInst>(t)) {
-            IRBuilder<> builder(op);
-            auto print_results = get_print_results_func(context, module);
-            std::vector<Value*> args;
-            builder.CreateCall(print_results, args);
-          }
-        }
-      }
+      // dfs_path_incs(entry, cfg, incs, 0, "");
+
+      // // print the results right before returning from main
+      // if (F.getName() == "main") {
+      //   Module* module = F.getParent();
+      //   auto &context = F.getContext();
+      //   for (auto &B : F) {
+      //     Instruction* t = B.getTerminator();
+      //     if (auto *op = dyn_cast<ReturnInst>(t)) {
+      //       IRBuilder<> builder(op);
+      //       auto print_results = get_print_results_func(context, module);
+      //       std::vector<Value*> args;
+      //       builder.CreateCall(print_results, args);
+      //     }
+      //   }
+      // }
 
       return false;
     }

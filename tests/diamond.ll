@@ -11,7 +11,7 @@ A:
   store i32 %arg, i32* %tmp, align 4
   store i32 0, i32* %tmp1, align 4
   %tmp2 = load i32, i32* %tmp, align 4
-  %tmp3 = icmp eq i32 %tmp2, 0
+  %tmp3 = icmp ne i32 %tmp2, 0
   br i1 %tmp3, label %B, label %C
 
 B:                                              ; preds = %bb
