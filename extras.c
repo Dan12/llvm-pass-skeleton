@@ -12,7 +12,9 @@ typedef struct table_entry {
 table_entry* first = NULL;
 table_entry* last = NULL;
 
-void* init_edge_table(int size, char* func_name) {
+// create a table for each function and insert it into the 
+// ll of function tables
+void* init_table(int size, char* func_name) {
     // printf("init table for %s\n", func_name);
     table_entry* entry = malloc(sizeof(table_entry));
     int* table = malloc(size*sizeof(int));
@@ -35,11 +37,13 @@ void* init_edge_table(int size, char* func_name) {
     return entry;
 }
 
+// increment index i of the given table
 void inc_table_entry(table_entry* entry, int i) {
     // printf("increment entry %d of %s\n", i, entry->func_name);
     entry->table[i]++;
 }
 
+// print all the results for each function
 void print_results() {
     table_entry* next = first;
     while(next != NULL) {
@@ -54,14 +58,3 @@ void print_results() {
         free(prev);
     }
 }
-
-// for each function
-// function var: is_init = false, table
-// if !is_init:
-//    table = create_func_table(func_name, size);
-//    is_init = true
-// elsewhere:
-//   inc_table_entry(table, i)
-
-// create_func_table(size)
-// linked_list of tables, on main return -> print_results

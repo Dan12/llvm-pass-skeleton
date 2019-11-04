@@ -9,6 +9,7 @@
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
 #include <unordered_map> 
+#include <unordered_set> 
 
 using namespace llvm;
 
@@ -19,48 +20,34 @@ Child_Parent_CFG generate_child_parent_cfg(Function &F) {
   std::unordered_map<BasicBlock*, std::vector<BasicBlock*>> cfg_parent_ptrs;
 
   for (auto it = F.begin(); it != F.end(); it++) {
-    // errs() << "A block\n";
     auto B = &(*it);
     const Instruction* t = B->getTerminator();
     int i;
     int numSuc = t->getNumSuccessors();
+    // create a list of B's children
     std::vector<BasicBlock*> succs;
     for (i = 0; i < numSuc; i++) {
       BasicBlock* succ = t->getSuccessor(i);
-      // errs() << "Succ: " << *succ << "\n";
 
-      auto entry = cfg_parent_ptrs.find(succ);
-      if (entry == cfg_parent_ptrs.end()) {
-        std::vector<BasicBlock*> parents;
-        parents.push_back(B);
-        std::pair<BasicBlock*, std::vector<BasicBlock*>> parent(succ, parents);
-        cfg_parent_ptrs.insert(parent);
-      } else {
-        entry->second.push_back(B);
-      }
+      // get the successor and add B to that node's parent list
+      auto succ_parents = cfg_parent_ptrs[succ];
+      succ_parents.push_back(B);
+      cfg_parent_ptrs[succ] = succ_parents;
+
       succs.push_back(succ);
     }
-    std::pair<BasicBlock*, std::vector<BasicBlock*>> children(B, succs);
-    cfg_child_ptrs.insert(children);
+    cfg_child_ptrs[B] = succs;
   }
 
   Child_Parent_CFG cfg;
 
   for (auto it = cfg_child_ptrs.begin(); it != cfg_child_ptrs.end(); it++) {
-    auto entry = cfg_parent_ptrs.find(it->first);
-    std::pair<std::vector<BasicBlock*>, std::vector<BasicBlock*>> child_parent;
-    if (entry == cfg_parent_ptrs.end()) {
-      std::vector<BasicBlock*> empty;
-      child_parent = std::pair<std::vector<BasicBlock*>, std::vector<BasicBlock*>>(it->second, empty);
-      
-    } else {
-      child_parent = std::pair<std::vector<BasicBlock*>, std::vector<BasicBlock*>>(it->second, entry->second);
-    }
-    std::pair<BasicBlock*, std::pair<std::vector<BasicBlock*>, std::vector<BasicBlock*>>> cfg_entry (it->first, child_parent);
-    cfg.insert(cfg_entry);
-
+    auto block = it->first;
+    auto parents = cfg_parent_ptrs[block];
+    auto children = it->second;
+    std::pair<std::vector<BasicBlock*>, std::vector<BasicBlock*>> child_parent(children, parents);
+    cfg[block] = child_parent;
   }
-
 
   return cfg;
 }
@@ -71,31 +58,19 @@ BasicBlock* get_entry(Child_Parent_CFG cfg) {
     if (parents.size() == 0) {
       return it->first;
     }
-
   }
   throw "No entry block for cfg";
 }
 
-// Function* static_print_func = NULL;
-// Function* getPrintFunct(LLVMContext &context, Module* module) {
-//   if (static_print_func == NULL) {
-//     std::vector<Type*> arg_types{Type::getInt32Ty(context)};
-//     auto return_type = Type::getVoidTy(context);
-//     FunctionType *FT = FunctionType::get(return_type, arg_types, false);
-//     static_print_func = Function::Create(FT, Function::ExternalLinkage, "print_num", module);
-//   }
-//   return static_print_func;
-// }
-
-Function* init_edge_table_func = NULL;
-Function* get_init_edge_table_func(LLVMContext &context, Module* module) {
-  if (init_edge_table_func == NULL) {
+Function* init_table_func = NULL;
+Function* get_init_table_func(LLVMContext &context, Module* module) {
+  if (init_table_func == NULL) {
     std::vector<Type*> arg_types{Type::getInt32Ty(context), Type::getInt8PtrTy(context)};
     auto return_type = Type::getInt8PtrTy(context);
     FunctionType *FT = FunctionType::get(return_type, arg_types, false);
-    init_edge_table_func = Function::Create(FT, Function::ExternalLinkage, "init_edge_table", module);
+    init_table_func = Function::Create(FT, Function::ExternalLinkage, "init_table", module);
   }
-  return init_edge_table_func;
+  return init_table_func;
 }
 
 Function* print_results_func = NULL;
@@ -120,6 +95,26 @@ Function* get_inc_table_entry_func(LLVMContext &context, Module* module) {
   return inc_table_entry_func;
 }
 
+void verify_cfg(Child_Parent_CFG cfg) {
+  int num_entry = 0;
+  int num_exit = 0;
+  for (auto it = cfg.begin(); it != cfg.end(); it++) {
+    auto parents = it->second.second;
+    if (parents.size() == 0) {
+      num_entry++;
+    } 
+
+    auto children = it->second.first;
+    if (children.size() == 0) {
+      num_exit++;
+    }
+
+  }
+  if (num_entry != 1 && num_exit != 1) {
+    throw "No unique entry and exit to cfg";
+  }
+}
+
 void insert_edge_counter(Function* F, BasicBlock* from_block, BasicBlock* to_block, Value* table_ptr, int edge_idx) {
   auto &context = F->getContext();
   Module* module = F->getParent();
@@ -142,10 +137,6 @@ void insert_edge_counter(Function* F, BasicBlock* from_block, BasicBlock* to_blo
     }
   }
 }
-
-// int nums = 4;
-// long long block_num = 0;
-// std::string block("block");
 
 Value* insert_check(Function* F, BasicBlock* entry, int num) {
   auto table_var_name = "__" + F->getName() + "_table";
@@ -175,14 +166,14 @@ Value* insert_check(Function* F, BasicBlock* entry, int num) {
 
   IRBuilder<> init_builder(is_uninit);
 
-  auto init_edge_table = get_init_edge_table_func(context, module);
+  auto init_table = get_init_table_func(context, module);
   std::vector<Value*> args;
   auto n = ConstantInt::get(Type::getInt32Ty(context), num, false);
   args.push_back(n);
   auto func_name = init_builder.CreateGlobalString(F->getName());
   auto func_name_ptr = init_builder.CreatePointerCast(func_name, ptr_type);
   args.push_back(func_name_ptr);
-  auto table = init_builder.CreateCall(init_edge_table, args);
+  auto table = init_builder.CreateCall(init_table, args);
   init_builder.CreateStore(table, table_var_ptr);
 
   init_builder.CreateBr(entry);
@@ -190,8 +181,10 @@ Value* insert_check(Function* F, BasicBlock* entry, int num) {
   return table_var_ptr;
 }
 
-std::vector<std::pair<BasicBlock*, BasicBlock*>> generate_edges(Child_Parent_CFG cfg, Function* F) {
-  std::vector<std::pair<BasicBlock*, BasicBlock*>> edges;
+using Edge_set = std::vector<std::pair<BasicBlock*, BasicBlock*>>;
+
+Edge_set generate_edges(Child_Parent_CFG cfg, Function* F) {
+  Edge_set edges;
   for (auto it = cfg.begin(); it != cfg.end(); it++) {
     auto from_block = it->first;
     auto children = it->second.first;
@@ -204,8 +197,43 @@ std::vector<std::pair<BasicBlock*, BasicBlock*>> generate_edges(Child_Parent_CFG
   return edges;
 }
 
-void generate_all_edge_counters(std::vector<std::pair<BasicBlock*, BasicBlock*>> edges, Function* F, Value* table) {
+std::vector<BasicBlock*> topological_sort(Child_Parent_CFG cfg, Edge_set edges) {
+  std::unordered_map<BasicBlock*, int> num_incoming;
+  for (auto it = edges.begin(); it != edges.end(); it++) {
+    auto to_block = it->second;
+    int num_edges = num_incoming[to_block];
+    num_edges++;
+    num_incoming[to_block] = num_edges;
+  }
+
+  std::vector<BasicBlock*> sort;
+  for (auto it = cfg.begin(); it != cfg.end(); it++) {
+    int num_edges = num_incoming[it->first];
+    if (num_edges == 0) {
+      sort.push_back(it->first);
+    }
+  }
+
+  for (std::vector<BasicBlock*>::size_type i = 0; i < sort.size(); i++) {
+    auto to_remove = sort[i];
+    auto children = cfg[to_remove].first;
+    for (auto it = children.begin(); it != children.end(); it++) {
+      auto child = *it;
+      int num_edges = num_incoming[child];
+      num_edges--;
+      num_incoming[child] = num_edges;
+      if (num_edges == 0) {
+        sort.push_back(child);
+      }
+    }
+  }
+
+  return sort;
+}
+
+void generate_all_edge_counters(Edge_set edges, Function* F, Value* table) {
   int num_edges = 0;
+  errs() << "Edge idx mappings:\n";
   for (auto it = edges.begin(); it != edges.end(); it++) {
     auto from_block = it->first;
     auto to_block = it->second;
@@ -213,6 +241,100 @@ void generate_all_edge_counters(std::vector<std::pair<BasicBlock*, BasicBlock*>>
     insert_edge_counter(F, from_block, to_block, table, num_edges);
     num_edges++;
   }
+}
+
+using Vals = std::unordered_map<BasicBlock*, std::unordered_map<BasicBlock*, int>>;
+Vals generate_vals(std::vector<BasicBlock*> sort, Child_Parent_CFG cfg) {
+  Vals val;
+  std::unordered_map<BasicBlock*, int> num_paths;
+  for (auto rit = sort.rbegin(); rit != sort.rend(); rit++) {
+    auto block = *rit;
+    auto children = cfg[block].first;
+    if (children.size() == 0) {
+      // this is the exit node
+      num_paths[block] = 1;
+    } else {
+      num_paths[block] = 0;
+      std::unordered_map<BasicBlock*, int> to_blocks;
+      for (auto it = children.begin(); it != children.end(); it++) {
+        auto to_block = *it;
+        to_blocks[to_block] = num_paths[block];
+        num_paths[block] = num_paths[block] + num_paths[to_block];
+      }
+      val[block] = to_blocks;
+    }
+  }
+
+  return val;
+}
+
+using Tree = std::unordered_map<BasicBlock*, std::unordered_set<BasicBlock*>>;
+// currently each edge has cost function = 1, so max spanning tree is one with maximum edges
+Tree gen_max_spanning_tree(Edge_set edges, BasicBlock* entry, BasicBlock* exit) {
+  // for each edge (u,v) this tree contains (u -> S where v in S and v -> T where u in T)
+  Tree tree;
+  // insert entry to exit edge so that it is not a chord
+  tree[entry].insert(exit);
+  tree[exit].insert(entry);
+
+  // should probably shuffle edges, but this is simpler
+  for (auto &edge : edges) {
+    auto u = edge.first;
+    auto v = edge.second;
+    // if at least one endpoint not in the tree, add the edge to the tree
+    if (tree.find(u) == tree.end() || tree.find(v) == tree.end()) {
+      tree[u].insert(v);
+      tree[v].insert(u);
+    }
+  }
+
+  return tree;
+}
+
+// find path from v to u through tree
+int get_inc(BasicBlock* v, BasicBlock* u, Vals vals, Tree tree, std::unordered_set<BasicBlock*> visited) {
+  int inc = INT_MIN;
+  visited.insert(v);
+  for (auto &next : tree[v]) {
+    // only visit unvisited nodes
+    if (visited.find(next) != visited.end()) {
+      int next_inc = get_inc(next, u, vals, tree, visited);
+      if (next_inc != INT_MIN) {
+        int val = vals[v][next];
+        if (val == 0) {
+          val = -vals[next][v];
+        }
+        inc = next_inc + val;
+        break;
+      }
+    }
+  }
+  return inc;
+}
+
+// for chord e=(u,v) of max spanning tree, Inc(e) = directed sum of Val(e') for all e' on the
+// path from v to u in the max spanning tree plus Val(e). I.e. if we take an edge e' in reverse
+// from the directed cfg then we subtract Val(e') from Inc(e).
+using Incs = std::unordered_map<BasicBlock*, std::unordered_map<BasicBlock*, int>>;
+Incs generate_incs(Edge_set edges, Vals vals, Tree tree) {
+  Incs incs;
+  for (auto &edge : edges) {
+    auto u = edge.first;
+    auto v = edge.second;
+    // check if edge is a chord of tree
+    if (tree[u].find(v) == tree[u].end()) {
+      std::unordered_set<BasicBlock*> visited;
+      int inc = get_inc(v, u, vals, tree, visited);
+      if (inc == INT_MIN) {
+        throw "Unable to compute inc";
+      }
+      auto u_map = incs[u];
+      u_map[v] = inc;
+      incs[u] = u_map;
+    }
+  }
+
+  return incs;
 }
 
 std::string block = "block";
@@ -226,6 +348,8 @@ namespace {
       errs() << "Function: " << F.getName() << "\n";
 
       auto cfg = generate_child_parent_cfg(F);
+      verify_cfg(cfg);
+
       auto entry = get_entry(cfg);
 
       int block_num = 0;
@@ -237,6 +361,25 @@ namespace {
 
       auto edges = generate_edges(cfg, &F);
       auto table_ptr = insert_check(&F, entry, edges.size());
+
+      auto sort = topological_sort(cfg, edges);
+      errs() << "sort:\n";
+      for (auto block : sort) {
+        errs() << block->getName() << "\n";
+      }
+
+      auto vals = generate_vals(sort, cfg);
+
+      errs() << "vals:\n";
+      for (auto sit = vals.begin(); sit != vals.end(); sit++) {
+        auto from_block = sit->first;
+        auto to_blocks = sit->second;
+        for (auto eit = to_blocks.begin(); eit != to_blocks.end(); eit++) {
+          auto to_block = eit->first;
+          int val = eit->second;
+          errs() << from_block->getName() << " - " << to_block->getName() << " : " << val << "\n";
+        }
+      }
 
       generate_all_edge_counters(edges, &F, table_ptr);
 
