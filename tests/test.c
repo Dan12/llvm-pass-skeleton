@@ -6,6 +6,7 @@ int add4(int x) {
 }
 
 int main() {
+  add4(-4);
   add4(5);
   return add4(10);
 }
