@@ -496,7 +496,6 @@ void generate_all_edge_counters(Incs &incs, Function* F, Value* r_ptr) {
     auto from_block = edge->from;
     auto to_block = edge->to;
     int inc = it->second;
-    // TODO insert back edge counters
     if (edge->back_edge_entry_mapping == NULL && edge->back_edge_exit_mapping == NULL) {
       if (inc != 0) {
         insert_r_inc(F, from_block, to_block, r_ptr, inc);
@@ -531,13 +530,20 @@ int dfs_path_incs(BasicBlock* u, Graph &g, Incs &incs, int inc, Twine on_path) {
   auto new_string = on_path + "," + u->getName();
   auto outgoing_edges = get_outgoing_edges(u, g);
   if (outgoing_edges.size() == 0) {
-    errs() << new_string << ":" << inc << "\n";
+    errs() << new_string << " : " << inc << "\n";
     return 1;
   } else {
     int num_paths = 0;
     for (auto &edge : outgoing_edges) {
       int new_inc = inc + incs[edge];
-      num_paths += dfs_path_incs(edge->to, g, incs, new_inc, new_string);
+      if (edge->back_edge_entry_mapping != NULL) {
+        num_paths += dfs_path_incs(edge->to, g, incs, new_inc, "Loop head at -> ");
+      } else if (edge->back_edge_exit_mapping != NULL) {
+        num_paths += 1;
+        errs() << new_string << " loop up to " << edge->back_edge_exit_mapping->to->getName() << " : " << inc << "\n";
+      } else {
+        num_paths += dfs_path_incs(edge->to, g, incs, new_inc, new_string);
+      }
     }
     return num_paths;
   }
@@ -658,7 +664,6 @@ namespace {
       }
 
       errs() << "Paths to sums:\n";
-      // TODO should include back edges
       int num_paths = dfs_path_incs(entry, g_minus_back_plus_loop, incs, 0, "");
       errs() << "Num paths: " << num_paths << "\n";
 
