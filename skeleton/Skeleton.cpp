@@ -537,10 +537,10 @@ int dfs_path_incs(BasicBlock* u, Graph &g, Incs &incs, int inc, Twine on_path) {
     for (auto &edge : outgoing_edges) {
       int new_inc = inc + incs[edge];
       if (edge->back_edge_entry_mapping != NULL) {
-        num_paths += dfs_path_incs(edge->to, g, incs, new_inc, "Loop head at -> ");
+        num_paths += dfs_path_incs(edge->to, g, incs, incs[edge], "Loop head at -> ");
       } else if (edge->back_edge_exit_mapping != NULL) {
         num_paths += 1;
-        errs() << new_string << " loop up to " << edge->back_edge_exit_mapping->to->getName() << " : " << inc << "\n";
+        errs() << new_string << " loop up to " << edge->back_edge_exit_mapping->to->getName() << " : " << new_inc << "\n";
       } else {
         num_paths += dfs_path_incs(edge->to, g, incs, new_inc, new_string);
       }
