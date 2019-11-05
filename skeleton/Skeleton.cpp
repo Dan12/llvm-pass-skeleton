@@ -13,63 +13,157 @@
 
 using namespace llvm;
 
-using Child_Parent_CFG = std::unordered_map<BasicBlock*, std::pair<std::vector<BasicBlock*>, std::vector<BasicBlock*>>>;
+typedef struct Edge {
+  BasicBlock* from;
+  BasicBlock* to;
+  struct Edge* back_edge_entry_mapping; // points to back edge that this edge replaced going from entry to the 'to' node, otherwise null
+  struct Edge* back_edge_exit_mapping; // points to back edge that this edge replaced going from 'from' node to exit, otherwise null
+} Edge;
 
-Child_Parent_CFG generate_child_parent_cfg(Function &F) {
-  std::unordered_map<BasicBlock*, std::vector<BasicBlock*>> cfg_child_ptrs;
-  std::unordered_map<BasicBlock*, std::vector<BasicBlock*>> cfg_parent_ptrs;
+Edge* create_edge(BasicBlock* from, BasicBlock* to) {
+  Edge* edge = (Edge*)malloc(sizeof(Edge));
+  edge->from = from;
+  edge->to = to;
+  edge->back_edge_entry_mapping = NULL;
+  edge->back_edge_exit_mapping = NULL;
+  return edge;
+}
 
+// everything is a vector because the graph could be a multigraph
+
+// a graph is a vector of edges
+using Graph = std::vector<Edge*>;
+
+std::vector<BasicBlock*> get_children(BasicBlock* block, Graph &g) {
+  std::vector<BasicBlock*> children;
+  for (auto &edge : g) {
+    if (edge->from == block) {
+      children.push_back(edge->to);
+    }
+  }
+  return children;
+}
+
+std::vector<BasicBlock*> get_parents(BasicBlock* block, Graph &g) {
+  std::vector<BasicBlock*> parents;
+  for (auto &edge : g) {
+    if (edge->to == block) {
+      parents.push_back(edge->from);
+    }
+  }
+  return parents;
+}
+
+std::vector<Edge*> get_incoming_edges(BasicBlock* block, Graph &g) {
+  std::vector<Edge*> incoming_edges;
+  for (auto &edge : g) {
+    if (edge->to == block) {
+      incoming_edges.push_back(edge);
+    }
+  }
+  return incoming_edges;
+}
+
+std::vector<Edge*> get_outgoing_edges(BasicBlock* block, Graph &g) {
+  std::vector<Edge*> outgoing_edges;
+  for (auto &edge : g) {
+    if (edge->from == block) {
+      outgoing_edges.push_back(edge);
+    }
+  }
+  return outgoing_edges;
+}
+
+bool directed_edge_exists(BasicBlock* u, BasicBlock* v, Graph &g) {
+  for (auto &edge : g) {
+    if (edge->from == u && edge->to == v) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool edge_exists(BasicBlock* u, BasicBlock* v, Graph &g) {
+  for (auto &edge : g) {
+    if ((edge->from == u && edge->to == v) || (edge->from == v && edge->to == u)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+using Vertices = std::vector<BasicBlock*>;
+
+Vertices generate_vertices(Function &F) {
+  Vertices v;
   for (auto it = F.begin(); it != F.end(); it++) {
     auto B = &(*it);
-    const Instruction* t = B->getTerminator();
+    v.push_back(B);
+  }
+  return v;
+}
+
+Graph generate_graph(Vertices &v) {
+  Graph g;
+  for (auto it = v.begin(); it != v.end(); it++) {
+    auto from_block = *it;
+    const Instruction* t = from_block->getTerminator();
     int i;
     int numSuc = t->getNumSuccessors();
     // create a list of B's children
     std::vector<BasicBlock*> succs;
     for (i = 0; i < numSuc; i++) {
-      BasicBlock* succ = t->getSuccessor(i);
+      BasicBlock* to_block = t->getSuccessor(i);
 
-      // get the successor and add B to that node's parent list
-      auto succ_parents = cfg_parent_ptrs[succ];
-      succ_parents.push_back(B);
-      cfg_parent_ptrs[succ] = succ_parents;
-
-      succs.push_back(succ);
+      auto edge = create_edge(from_block, to_block);
+      g.push_back(edge);
     }
-    cfg_child_ptrs[B] = succs;
   }
 
-  Child_Parent_CFG cfg;
-
-  for (auto it = cfg_child_ptrs.begin(); it != cfg_child_ptrs.end(); it++) {
-    auto block = it->first;
-    auto parents = cfg_parent_ptrs[block];
-    auto children = it->second;
-    std::pair<std::vector<BasicBlock*>, std::vector<BasicBlock*>> child_parent(children, parents);
-    cfg[block] = child_parent;
-  }
-
-  return cfg;
+  return g;
 }
 
-BasicBlock* get_entry(Child_Parent_CFG cfg) {
-  for (auto it = cfg.begin(); it != cfg.end(); it++) {
-    auto parents = it->second.second;
+BasicBlock* get_entry(Vertices &v, Graph &g) {
+  for (auto it = v.begin(); it != v.end(); it++) {
+    auto block = *it;
+    auto parents = get_parents(block, g);
     if (parents.size() == 0) {
-      return it->first;
+      return block;
     }
   }
   throw "No entry block for cfg";
 }
 
-BasicBlock* get_exit(Child_Parent_CFG cfg) {
-  for (auto it = cfg.begin(); it != cfg.end(); it++) {
-    auto children = it->second.first;
+BasicBlock* get_exit(Vertices &v, Graph &g) {
+  for (auto it = v.begin(); it != v.end(); it++) {
+    auto block = *it;
+    auto children = get_children(block, g);
     if (children.size() == 0) {
-      return it->first;
+      return block;
     }
   }
   throw "No exit block for cfg";
+}
+
+void verify_graph(Vertices &v, Graph &g) {
+  int num_entry = 0;
+  int num_exit = 0;
+  for (auto it = v.begin(); it != v.end(); it++) {
+    auto block = *it;
+    auto parents = get_parents(block, g);
+    if (parents.size() == 0) {
+      num_entry++;
+    } 
+
+    auto children = get_children(block, g);
+    if (children.size() == 0) {
+      num_exit++;
+    }
+
+  }
+  if (num_entry != 1 && num_exit != 1) {
+    throw "No unique entry and exit to cfg";
+  }
 }
 
 Function* init_table_func = NULL;
@@ -105,23 +199,40 @@ Function* get_inc_table_entry_func(LLVMContext &context, Module* module) {
   return inc_table_entry_func;
 }
 
-void verify_cfg(Child_Parent_CFG cfg) {
-  int num_entry = 0;
-  int num_exit = 0;
-  for (auto it = cfg.begin(); it != cfg.end(); it++) {
-    auto parents = it->second.second;
-    if (parents.size() == 0) {
-      num_entry++;
-    } 
+void insert_loop_path_counter(Function* F, BasicBlock* from_block, BasicBlock* to_block, Value* table_ptr, Value* r_ptr, int inc, int reset) {
+  auto &context = F->getContext();
+  Module* module = F->getParent();
+  BasicBlock* block = BasicBlock::Create(context, "", F, to_block);
+  IRBuilder<> builder(block);
 
-    auto children = it->second.first;
-    if (children.size() == 0) {
-      num_exit++;
-    }
-
+  if (inc != 0) {
+    auto r = builder.CreateLoad(r_ptr);
+    auto inc_const = ConstantInt::get(Type::getInt32Ty(context), inc, false);
+    auto sum = builder.CreateAdd(r, inc_const);
+    builder.CreateStore(sum, r_ptr);
   }
-  if (num_entry != 1 && num_exit != 1) {
-    throw "No unique entry and exit to cfg";
+
+  // counter[r]++
+  auto inc_table_entry = get_inc_table_entry_func(context, module);
+  std::vector<Value*> args;
+  auto table = builder.CreateLoad(table_ptr);
+  args.push_back(table);
+  auto idx = builder.CreateLoad(r_ptr);
+  args.push_back(idx);
+  builder.CreateCall(inc_table_entry, args);
+
+  // r = init_loop_value
+  auto reset_const = ConstantInt::get(Type::getInt32Ty(context), reset, false);
+  builder.CreateStore(reset_const, r_ptr);
+
+  builder.CreateBr(to_block);
+
+  auto term = from_block->getTerminator();
+  for (int i = 0; i < term->getNumSuccessors(); i++) {
+    if (term->getSuccessor(i) == to_block) {
+      term->setSuccessor(i, block);
+      break;
+    }
   }
 }
 
@@ -183,8 +294,12 @@ std::pair<Value*, Value*> insert_check(Function* F, BasicBlock* entry, int table
   BasicBlock* is_uninit = BasicBlock::Create(context, "is_uninit", F);
 
   IRBuilder<> check_builder(check_block);
+
+  // r = 0
   auto r_ptr = check_builder.CreateAlloca(Type::getInt32Ty(context));
   check_builder.CreateStore(zero32, r_ptr);
+
+  // if table_ptr == NULL then init else entry
   auto table_var = check_builder.CreateLoad(ptr_type, table_var_ptr);
   auto ptr_diff = check_builder.CreatePtrDiff(table_var, null);
   auto is_zero = check_builder.CreateICmpEQ(ptr_diff, zero);
@@ -192,6 +307,7 @@ std::pair<Value*, Value*> insert_check(Function* F, BasicBlock* entry, int table
 
   IRBuilder<> init_builder(is_uninit);
 
+  // table_ptr = init_table(table_size, func_name)
   auto init_table = get_init_table_func(context, module);
   std::vector<Value*> args;
   auto n = ConstantInt::get(Type::getInt32Ty(context), table_size, false);
@@ -208,42 +324,25 @@ std::pair<Value*, Value*> insert_check(Function* F, BasicBlock* entry, int table
   return r_ptr_table_ptr;
 }
 
-using Edge_set = std::vector<std::pair<BasicBlock*, BasicBlock*>>;
-
-Edge_set generate_edges(Child_Parent_CFG cfg, Function* F) {
-  Edge_set edges;
-  for (auto it = cfg.begin(); it != cfg.end(); it++) {
-    auto from_block = it->first;
-    auto children = it->second.first;
-    for (auto child_it = children.begin(); child_it != children.end(); child_it++) {
-      auto to_block = *child_it;
-      std::pair<BasicBlock*, BasicBlock*> edge(from_block, to_block);
-      edges.push_back(edge);
-    }
-  }
-  return edges;
-}
-
-std::vector<BasicBlock*> topological_sort(Child_Parent_CFG cfg, Edge_set edges) {
+std::vector<BasicBlock*> topological_sort(Vertices &v, Graph &g) {
   std::unordered_map<BasicBlock*, int> num_incoming;
-  for (auto it = edges.begin(); it != edges.end(); it++) {
-    auto to_block = it->second;
-    int num_edges = num_incoming[to_block];
-    num_edges++;
-    num_incoming[to_block] = num_edges;
+  for (auto it = v.begin(); it != v.end(); it++) {
+    auto to_block = *it;
+    auto incoming = get_incoming_edges(to_block, g);
+    num_incoming[to_block] = incoming.size();
   }
 
   std::vector<BasicBlock*> sort;
-  for (auto it = cfg.begin(); it != cfg.end(); it++) {
-    int num_edges = num_incoming[it->first];
-    if (num_edges == 0) {
-      sort.push_back(it->first);
+  for (auto it = v.begin(); it != v.end(); it++) {
+    auto block = *it;
+    if (num_incoming[block] == 0) {
+      sort.push_back(block);
     }
   }
 
   for (std::vector<BasicBlock*>::size_type i = 0; i < sort.size(); i++) {
     auto to_remove = sort[i];
-    auto children = cfg[to_remove].first;
+    auto children = get_children(to_remove, g);
     for (auto it = children.begin(); it != children.end(); it++) {
       auto child = *it;
       int num_edges = num_incoming[child];
@@ -258,70 +357,73 @@ std::vector<BasicBlock*> topological_sort(Child_Parent_CFG cfg, Edge_set edges) 
   return sort;
 }
 
-using Vals = std::unordered_map<BasicBlock*, std::unordered_map<BasicBlock*, int>>;
-std::pair<Vals, int> generate_vals(std::vector<BasicBlock*> sort, Child_Parent_CFG cfg, BasicBlock* entry) {
+using Vals = std::unordered_map<Edge*, int>;
+Vals generate_vals(std::vector<BasicBlock*> &sort, Vertices &v, Graph &g, BasicBlock* entry) {
   Vals val;
   std::unordered_map<BasicBlock*, int> num_paths;
   for (auto rit = sort.rbegin(); rit != sort.rend(); rit++) {
     auto block = *rit;
-    auto children = cfg[block].first;
-    if (children.size() == 0) {
+    auto outgoing_edges = get_outgoing_edges(block, g);
+    if (outgoing_edges.size() == 0) {
       // this is the exit node
       num_paths[block] = 1;
     } else {
       num_paths[block] = 0;
-      std::unordered_map<BasicBlock*, int> to_blocks;
-      for (auto it = children.begin(); it != children.end(); it++) {
-        auto to_block = *it;
-        to_blocks[to_block] = num_paths[block];
+      for (auto it = outgoing_edges.begin(); it != outgoing_edges.end(); it++) {
+        auto edge = *it;
+        val[edge] = num_paths[block];
+        auto to_block = edge->to;
         num_paths[block] = num_paths[block] + num_paths[to_block];
       }
-      val[block] = to_blocks;
     }
   }
 
-  std::pair<Vals, int> vals_num_paths(val, num_paths[entry]);
-  return vals_num_paths;
+  return val;
 }
 
-using Tree = std::unordered_map<BasicBlock*, std::unordered_set<BasicBlock*>>;
-// return 1 if path from u to v, else return 0
-int exists_path(BasicBlock* u, BasicBlock* v, Tree &tree, std::unordered_set<BasicBlock*> &visited) {
+using Tree = std::unordered_set<Edge*>;
+// return true if path from u to v, else return false
+bool exists_path(BasicBlock* u, BasicBlock* v, Tree &tree, std::unordered_set<BasicBlock*> &visited) {
   if (u == v) {
-    return 1;
+    return true;
   }
 
   visited.insert(u);
-  for (auto &next : tree[u]) {
-    // only visit unvisited nodes
-    if (visited.find(next) == visited.end()) {
-      int is_reachable = exists_path(next, v, tree, visited);
-      if (is_reachable == 1) {
-        return 1;
+  for (auto &edge : tree) {
+    BasicBlock* next = NULL;
+    if (edge->to == u) {
+      next = edge->from;
+    } else if (edge->from == u) {
+      next = edge->to;
+    }
+
+    if (next != NULL) {
+      if (visited.find(next) == visited.end()) {
+        if (exists_path(next, v, tree, visited)) {
+          return true;
+        }
       }
     }
   }
 
-  return 0;
+  return false;
 }
 
 // currently each edge has cost function = 1, so max spanning tree is one with maximum edges
-Tree gen_max_spanning_tree(Edge_set edges, BasicBlock* entry, BasicBlock* exit) {
+Tree gen_max_spanning_tree(Graph &g) {
   // for each edge (u,v) this tree contains (u -> S where v in S and v -> T where u in T)
   Tree tree;
-  // insert entry to exit edge so that it is not a chord
-  tree[entry].insert(exit);
-  tree[exit].insert(entry);
 
   // should probably shuffle edges, but this is simpler
-  for (auto &edge : edges) {
-    auto u = edge.first;
-    auto v = edge.second;
-    // if at least one endpoint not in the tree, add the edge to the tree
+  // also, exit to entry node should be first node in g so that it isn't a chord
+  for (auto &edge : g) {
+    // order of u and v don't matter because we are checking for a path in an undirected tree
+    auto u = edge->from;
+    auto v = edge->to;
+    // if there is not already a path from u to v in the tree, add the edge
     std::unordered_set<BasicBlock*> visited;
-    if (exists_path(u, v, tree, visited) == 0) {
-      tree[u].insert(v);
-      tree[v].insert(u);
+    if (exists_path(u, v, tree, visited) == false) {
+      tree.insert(edge);
     }
   }
 
@@ -329,7 +431,7 @@ Tree gen_max_spanning_tree(Edge_set edges, BasicBlock* entry, BasicBlock* exit) 
 }
 
 // find path from v to u through tree
-int get_inc(BasicBlock* v, BasicBlock* u, Vals vals, Tree tree, std::unordered_set<BasicBlock*> visited) {
+int get_inc(BasicBlock* v, BasicBlock* u, Vals &vals, Tree &tree, std::unordered_set<BasicBlock*> &visited) {
   // errs() << "visiting " << v->getName() << "\n";
   if (v == u) {
     return 0;
@@ -337,17 +439,26 @@ int get_inc(BasicBlock* v, BasicBlock* u, Vals vals, Tree tree, std::unordered_s
 
   int inc = INT_MIN;
   visited.insert(v);
-  for (auto &next : tree[v]) {
-    // only visit unvisited nodes
-    if (visited.find(next) == visited.end()) {
-      int next_inc = get_inc(next, u, vals, tree, visited);
-      if (next_inc != INT_MIN) {
-        int val = vals[v][next];
-        if (val == 0) {
-          val = -vals[next][v];
+  for (auto &edge : tree) {
+    BasicBlock* next = NULL;
+    if (edge->to == v) {
+      next = edge->from;
+    } else if (edge->from == v) {
+      next = edge->to;
+    }
+    if (next != NULL) {
+      // only visit unvisited nodes
+      if (visited.find(next) == visited.end()) {
+        int next_inc = get_inc(next, u, vals, tree, visited);
+        if (next_inc != INT_MIN) {
+          int val = vals[edge];
+          // check if we traversed the edge backwards
+          if (edge->to == v) {
+            val = -val;
+          }
+          inc = next_inc + val;
+          break;
         }
-        inc = next_inc + val;
-        break;
       }
     }
   }
@@ -357,37 +468,36 @@ int get_inc(BasicBlock* v, BasicBlock* u, Vals vals, Tree tree, std::unordered_s
 // for chord e=(u,v) of max spanning tree, Inc(e) = directed sum of Val(e') for all e' on the
 // path from v to u in the max spanning tree plus Val(e). I.e. if we take an edge e' in reverse
 // from the directed cfg then we subtract Val(e') from Inc(e).
-using Incs = std::unordered_map<BasicBlock*, std::unordered_map<BasicBlock*, int>>;
-Incs generate_incs(Edge_set edges, Vals vals, Tree tree) {
+using Incs = std::unordered_map<Edge*, int>;
+Incs generate_incs(Graph &g, Vals &vals, Tree &tree) {
   Incs incs;
-  for (auto &edge : edges) {
-    auto u = edge.first;
-    auto v = edge.second;
+  for (auto &edge : g) {
     // check if edge is a chord of tree
-    if (tree[u].find(v) == tree[u].end()) {
+    if (tree.find(edge) == tree.end()) {
+      auto u = edge->from;
+      auto v = edge->to;
       // errs() << "find inc from " << u->getName() << " - " << v->getName() << "\n";
       std::unordered_set<BasicBlock*> visited;
       int inc = get_inc(v, u, vals, tree, visited);
       if (inc == INT_MIN) {
-        throw "Unable to compute inc";
+        throw "Unable to compute inc for chord";
       }
-      inc += vals[u][v];
-      auto u_map = incs[u];
-      u_map[v] = inc;
-      incs[u] = u_map;
+      inc += vals[edge];
+      incs[edge] = inc;
     }
   }
 
   return incs;
 }
 
-void generate_all_edge_counters(Incs incs, Function* F, Value* r_ptr) {
+void generate_all_edge_counters(Incs &incs, Function* F, Value* r_ptr) {
   for (auto it = incs.begin(); it != incs.end(); it++) {
-    auto from_block = it->first;
-    auto to_blocks = it->second;
-    for (auto eit = to_blocks.begin(); eit != to_blocks.end(); eit++) {
-      auto to_block = eit->first;
-      int inc = eit->second;
+    auto edge = it->first;
+    auto from_block = edge->from;
+    auto to_block = edge->to;
+    int inc = it->second;
+    // TODO insert back edge counters
+    if (edge->back_edge_entry_mapping == NULL && edge->back_edge_exit_mapping == NULL) {
       if (inc != 0) {
         insert_r_inc(F, from_block, to_block, r_ptr, inc);
       }
@@ -395,31 +505,56 @@ void generate_all_edge_counters(Incs incs, Function* F, Value* r_ptr) {
   }
 }
 
-void dfs_path_incs(BasicBlock* u, Child_Parent_CFG cfg, Incs incs, int inc, Twine on_path) {
-  auto new_string = on_path + "," + u->getName();
-  auto children = cfg[u].first;
-  if (children.size() == 0) {
-    errs() << new_string << ":" << inc << "\n";
-  } else {
-    for (auto &child : children) {
-      int new_inc = inc + incs[u][child];
-      dfs_path_incs(child, cfg, incs, new_inc, new_string);
+void generate_all_loop_counters(std::vector<Edge*> back_edges, Incs &incs, Function* F, Value* table_ptr, Value* r_ptr) {
+  for (auto &edge: back_edges) {
+    auto from_block = edge->from;
+    auto to_block = edge->to;
+    int inc = 0;
+    int reset = 0;
+    for (auto it = incs.begin(); it != incs.end(); it++) {
+      auto inc_edge = it->first;
+      auto inc_inc = it->second;
+      // entry to top represents reset value
+      if (inc_edge->back_edge_entry_mapping == edge) {
+        reset = inc_inc;
+      }
+      // tail to exit represents inc before count increment
+      if (inc_edge->back_edge_exit_mapping == edge) {
+        inc = inc_inc;
+      }
     }
+    insert_loop_path_counter(F, from_block, to_block, table_ptr, r_ptr, inc, reset);
   }
 }
 
-void dfs_find_back_edges(BasicBlock* u, Child_Parent_CFG &cfg, std::unordered_map<BasicBlock*, int>& color, Edge_set &back_edges) {
+int dfs_path_incs(BasicBlock* u, Graph &g, Incs &incs, int inc, Twine on_path) {
+  auto new_string = on_path + "," + u->getName();
+  auto outgoing_edges = get_outgoing_edges(u, g);
+  if (outgoing_edges.size() == 0) {
+    errs() << new_string << ":" << inc << "\n";
+    return 1;
+  } else {
+    int num_paths = 0;
+    for (auto &edge : outgoing_edges) {
+      int new_inc = inc + incs[edge];
+      num_paths += dfs_path_incs(edge->to, g, incs, new_inc, new_string);
+    }
+    return num_paths;
+  }
+}
+
+void dfs_find_back_edges(BasicBlock* u, Graph &g, std::unordered_map<BasicBlock*, int>& color, std::vector<Edge*> &back_edges) {
   // color = 0 is white, 1 = gray, 2 = black
   color[u] = 1;
-  auto children = cfg[u].first;
-  for (auto &child : children) {
-    if (color[child] != 0) {
-      if (color[child] == 1) {
-        std::pair<BasicBlock*, BasicBlock*> back_edge(u, child);
-        back_edges.push_back(back_edge);
+  auto outgoing_edges = get_outgoing_edges(u, g);
+  for (auto &edge : outgoing_edges) {
+    auto to_block = edge->to;
+    if (color[to_block] != 0) {
+      if (color[to_block] == 1) {
+        back_edges.push_back(edge);
       }
     } else {
-      dfs_find_back_edges(child, cfg, color, back_edges);
+      dfs_find_back_edges(to_block, g, color, back_edges);
     }
   }
   color[u] = 2;
@@ -441,147 +576,120 @@ namespace {
         B.setName(block + std::to_string(block_num++));
       }
 
-      auto cfg = generate_child_parent_cfg(F);
-      verify_cfg(cfg);
+      auto v = generate_vertices(F);
+      auto g = generate_graph(v);
+      verify_graph(v, g);
 
-      auto entry = get_entry(cfg);
-      auto exit = get_exit(cfg);
+      auto entry = get_entry(v, g);
+      auto exit = get_exit(v, g);
+
+      errs() << "Entry: " << entry->getName() << " , Exit: " << exit->getName() << "\n";
 
       std::unordered_map<BasicBlock*, int> color;
-      Edge_set back_edges;
-      dfs_find_back_edges(entry, cfg, color, back_edges);
+      std::vector<Edge*> back_edges;
+      dfs_find_back_edges(entry, g, color, back_edges);
       errs() << "back edges:\n";
       for (auto &edge : back_edges) {
-        errs() << edge.first->getName() << " - " << edge.second->getName() << "\n";
+        errs() << edge->from->getName() << " - " << edge->to->getName() << "\n";
       }
 
-      Child_Parent_CFG cfg_with_loop_edges;
+      Graph g_minus_back_plus_loop;
 
-      auto edges = generate_edges(cfg, &F);
-      Edge_set forward_edges;
-      for (auto &edge : edges) {
+      for (auto &edge : g) {
         if (std::find(back_edges.begin(), back_edges.end(), edge) != back_edges.end()) {
-          std::pair<BasicBlock*, BasicBlock*> entry_to_head(entry, edge.second);
-          std::pair<BasicBlock*, BasicBlock*> bottom_to_exit(edge.first, exit);
-          forward_edges.push_back(entry_to_head);
-          forward_edges.push_back(bottom_to_exit);
+          // if [edge] is a back edge, dont add it to [g_minus_back_plus_loop]
+          // and instead create two new edges from entry to head and tail to exit
+          Edge* entry_to_head = create_edge(entry, edge->to);
+          entry_to_head->back_edge_entry_mapping = edge;
+          g_minus_back_plus_loop.push_back(entry_to_head);
 
-          // update set child and parents
-          auto entry_cp = cfg_with_loop_edges[entry];
-          entry_cp.first.push_back(edge.second);
-          cfg_with_loop_edges[entry] = entry_cp;
-
-          auto loop_head_cp = cfg_with_loop_edges[edge.second];
-          loop_head_cp.second.push_back(entry);
-          cfg_with_loop_edges[edge.second] = loop_head_cp;
-
-          // update child and parents
-          auto loop_bottom_cp = cfg_with_loop_edges[edge.first];
-          loop_bottom_cp.first.push_back(exit);
-          cfg_with_loop_edges[edge.first] = loop_bottom_cp;
-
-          auto exit_cp = cfg_with_loop_edges[exit];
-          exit_cp.second.push_back(edge.first);
-          cfg_with_loop_edges[exit] = exit_cp;
+          Edge* tail_to_exit = create_edge(edge->from, exit);
+          tail_to_exit->back_edge_exit_mapping = edge;
+          g_minus_back_plus_loop.push_back(tail_to_exit);
         } else {
-          forward_edges.push_back(edge);
-
-          // set child
-          auto head_cp = cfg_with_loop_edges[edge.first];
-          head_cp.first.push_back(edge.second);
-          cfg_with_loop_edges[edge.first] = head_cp;
-
-          // set parent
-          auto tail_cp = cfg_with_loop_edges[edge.second];
-          tail_cp.second.push_back(edge.first);
-          cfg_with_loop_edges[edge.second] = tail_cp;
+          g_minus_back_plus_loop.push_back(edge);
         }
       }
 
-      errs() << "edges:\n";
-      for (auto &edge : edges) {
-        errs() << edge.first->getName() << " - " << edge.second->getName() << "\n";
+      errs() << "Graph:\n";
+      for (auto &edge : g_minus_back_plus_loop) {
+        errs() << edge->from->getName() << " - " << edge->to->getName() << "\n";
       }
 
-      errs() << "forward edges:\n";
-      for (auto &edge : forward_edges) {
-        errs() << edge.first->getName() << " - " << edge.second->getName() << "\n";
-      }
-
-      auto sort = topological_sort(cfg, edges);
+      auto sort = topological_sort(v, g_minus_back_plus_loop);
       errs() << "sort:\n";
-      for (auto block : sort) {
+      for (auto &block : sort) {
         errs() << block->getName() << "\n";
       }
 
-      auto vals_num_paths = generate_vals(sort, cfg_with_loop_edges, entry);
-      auto vals = vals_num_paths.first;
-      int num_paths = vals_num_paths.second;
-      vals[exit][entry] = 0;
+      auto vals = generate_vals(sort, v, g_minus_back_plus_loop, entry);
 
       errs() << "vals:\n";
-      for (auto sit = vals.begin(); sit != vals.end(); sit++) {
-        auto from_block = sit->first;
-        auto to_blocks = sit->second;
-        for (auto eit = to_blocks.begin(); eit != to_blocks.end(); eit++) {
-          auto to_block = eit->first;
-          int val = eit->second;
-          errs() << from_block->getName() << " - " << to_block->getName() << " : " << val << "\n";
-        }
+      for (auto it = vals.begin(); it != vals.end(); it++) {
+        auto edge = it->first;
+        auto val = it->second;
+        errs() << edge->from->getName() << " - " << edge->to->getName() << " : " << val << "\n";
       }
 
-      // auto tree = gen_max_spanning_tree(edges, entry, exit);
+      // add exit to entry edge
 
-      // errs() << "max spanning tree edges:\n";
-      // for (auto sit = tree.begin(); sit != tree.end(); sit++) {
-      //   auto from_block = sit->first;
-      //   auto to_blocks = sit->second;
-      //   for (auto &to_block : to_blocks) {
-      //     if ((from_block == exit && to_block == entry) || vals[from_block].find(to_block) != vals[from_block].end()) {
-      //       errs() << from_block->getName() << " - " << to_block->getName() << "\n";
-      //     }
-      //   }
-      // }
+      Graph g_minus_back_plus_loop_plus_ete;
+      Edge* exit_to_entry = create_edge(exit, entry);
+      vals[exit_to_entry] = 0;
+      g_minus_back_plus_loop_plus_ete.push_back(exit_to_entry);
+      for (auto &edge : g_minus_back_plus_loop) {
+        g_minus_back_plus_loop_plus_ete.push_back(edge);
+      }
 
-      // auto incs = generate_incs(edges, vals, tree);
-      // errs() << "incs:\n";
-      // for (auto sit = incs.begin(); sit != incs.end(); sit++) {
-      //   auto from_block = sit->first;
-      //   auto to_blocks = sit->second;
-      //   for (auto eit = to_blocks.begin(); eit != to_blocks.end(); eit++) {
-      //     auto to_block = eit->first;
-      //     int inc = eit->second;
-      //     errs() << from_block->getName() << " - " << to_block->getName() << " : " << inc << "\n";
-      //   }
-      // }
+      auto tree = gen_max_spanning_tree(g_minus_back_plus_loop_plus_ete);
 
-      // // insert the table init check and the r=0 instruction
-      // auto r_ptr_table_ptr = insert_check(&F, entry, num_paths);
-      // auto r_ptr = r_ptr_table_ptr.first;
-      // auto table_ptr = r_ptr_table_ptr.second;
+      errs() << "max spanning tree edges:\n";
+      for (auto &edge : tree) {
+        errs() << edge->from->getName() << " - " << edge->to->getName() << "\n";
+      }
 
-      // // insert the index increments
-      // generate_all_edge_counters(incs, &F, r_ptr);
+      auto incs = generate_incs(g_minus_back_plus_loop_plus_ete, vals, tree);
 
-      // // insert the path incrementer at the exit node
-      // insert_path_counter(&F, exit, table_ptr, r_ptr);
+      errs() << "incs:\n";
+      for (auto it = incs.begin(); it != incs.end(); it++) {
+        auto edge = it->first;
+        auto inc = it->second;
+        errs() << edge->from->getName() << " - " << edge->to->getName() << " : " << inc << "\n";
+      }
 
-      // dfs_path_incs(entry, cfg, incs, 0, "");
+      errs() << "Paths to sums:\n";
+      // TODO should include back edges
+      int num_paths = dfs_path_incs(entry, g_minus_back_plus_loop, incs, 0, "");
+      errs() << "Num paths: " << num_paths << "\n";
 
-      // // print the results right before returning from main
-      // if (F.getName() == "main") {
-      //   Module* module = F.getParent();
-      //   auto &context = F.getContext();
-      //   for (auto &B : F) {
-      //     Instruction* t = B.getTerminator();
-      //     if (auto *op = dyn_cast<ReturnInst>(t)) {
-      //       IRBuilder<> builder(op);
-      //       auto print_results = get_print_results_func(context, module);
-      //       std::vector<Value*> args;
-      //       builder.CreateCall(print_results, args);
-      //     }
-      //   }
-      // }
+      // insert the table init check and the r=0 instruction
+      auto r_ptr_table_ptr = insert_check(&F, entry, num_paths);
+      auto r_ptr = r_ptr_table_ptr.first;
+      auto table_ptr = r_ptr_table_ptr.second;
+
+      // insert the index increments
+      generate_all_edge_counters(incs, &F, r_ptr);
+
+      // insert path incrementers at back edges
+      generate_all_loop_counters(back_edges, incs, &F, table_ptr, r_ptr);
+
+      // insert the path incrementer at the exit node
+      insert_path_counter(&F, exit, table_ptr, r_ptr);
+
+      // print the results right before returning from main
+      if (F.getName() == "main") {
+        Module* module = F.getParent();
+        auto &context = F.getContext();
+        for (auto &B : F) {
+          Instruction* t = B.getTerminator();
+          if (auto *op = dyn_cast<ReturnInst>(t)) {
+            IRBuilder<> builder(op);
+            auto print_results = get_print_results_func(context, module);
+            std::vector<Value*> args;
+            builder.CreateCall(print_results, args);
+          }
+        }
+      }
 
       return false;
     }
