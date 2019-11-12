@@ -5,8 +5,8 @@ import os
 import glob
 from collections import namedtuple
 
-TEST_DIR = "tests"
-TMP_DIR = "test_output"
+TEST_DIR = "perf"
+TMP_DIR = "perf_output"
 
 SubprocessResult = namedtuple('SubprocessResult', ['returncode', 'stdout', 'stderr'])
 TIMEOUT_SIGNAL = -1
@@ -116,7 +116,7 @@ for file in files:
         print("FAILED! Unable to make test bin")
         print(make_test_bin.stdout.decode('utf-8'))
     
-    run_bin = run(["./"+test_bin], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    run_bin = run(["time", "./"+test_bin], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     normal_stdout = os.path.join(test_dir, "test.stdout")
     f = open(normal_stdout, "w+")
     f.write(run_bin.stdout.decode('utf-8'))
@@ -135,7 +135,7 @@ for file in files:
         print("FAILED! Unable to make prof bin")
         print(make_prof_bin.stdout.decode('utf-8'))
     
-    run_prof_bin = run(["./"+test_prof_bin], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    run_prof_bin = run(["time", "./"+test_prof_bin], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     prof_stdout = os.path.join(test_dir, "test_prof.stdout")
     f = open(prof_stdout, "w+")
     f.write(run_prof_bin.stdout.decode('utf-8'))

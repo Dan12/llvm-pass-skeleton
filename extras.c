@@ -3,7 +3,7 @@
 #include <string.h>
 
 typedef struct table_entry {
-   int* table;
+   uint64_t* table;
    int n;
    char* func_name;
    struct table_entry* next;
@@ -17,8 +17,8 @@ table_entry* last = NULL;
 void* init_table(int size, char* func_name) {
     // printf("init table for %s\n", func_name);
     table_entry* entry = malloc(sizeof(table_entry));
-    int* table = malloc(size*sizeof(int));
-    memset(table, 0, size * sizeof(int));
+    uint64_t* table = malloc(size*sizeof(uint64_t));
+    memset(table, 0, size * sizeof(uint64_t));
 
     // init data
     entry->table = table;
@@ -50,7 +50,7 @@ void print_results() {
         int i;
         printf("%s:\n", next->func_name);
         for (i = 0; i < next->n; i++) {
-            printf("\t%d = %d\n", i, next->table[i]);
+            printf("\t%d = %lld\n", i, next->table[i]);
         }
         free(next->table);
         table_entry* prev = next;

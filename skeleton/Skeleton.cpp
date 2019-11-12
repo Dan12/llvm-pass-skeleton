@@ -199,6 +199,19 @@ Function* get_inc_table_entry_func(LLVMContext &context, Module* module) {
   return inc_table_entry_func;
 }
 
+void setPhiNodes(BasicBlock* to_block, BasicBlock* old_from_block, BasicBlock* new_from_block) {
+  for (auto it = to_block->begin(); it != to_block->end(); it++) {
+    auto instr = &(*it);
+    if (auto *op = dyn_cast<PHINode>(instr)) {
+      for (int i = 0; i < op->getNumIncomingValues(); i++) {
+        if (op->getIncomingBlock(i) == old_from_block) {
+          op->setIncomingBlock(i, new_from_block);
+        }
+      }
+    }
+  }
+}
+
 void insert_loop_path_counter(Function* F, BasicBlock* from_block, BasicBlock* to_block, Value* table_ptr, Value* r_ptr, int inc, int reset) {
   auto &context = F->getContext();
   Module* module = F->getParent();
@@ -231,6 +244,7 @@ void insert_loop_path_counter(Function* F, BasicBlock* from_block, BasicBlock* t
   for (int i = 0; i < term->getNumSuccessors(); i++) {
     if (term->getSuccessor(i) == to_block) {
       term->setSuccessor(i, block);
+      setPhiNodes(to_block, from_block, block);
       break;
     }
   }
@@ -266,6 +280,7 @@ void insert_r_inc(Function* F, BasicBlock* from_block, BasicBlock* to_block, Val
   for (int i = 0; i < term->getNumSuccessors(); i++) {
     if (term->getSuccessor(i) == to_block) {
       term->setSuccessor(i, block);
+      setPhiNodes(to_block, from_block, block);
       break;
     }
   }
