@@ -579,7 +579,9 @@ namespace {
       int block_num = 0;
       // assign name to every block
       for (auto &B : F) {
-        B.setName(block + std::to_string(block_num++));
+        auto new_name = block + std::to_string(block_num++);
+        errs() << "Function rename: " << B.getName() << " - " << new_name << "\n";
+        B.setName(new_name);
       }
 
       auto v = generate_vertices(F);
@@ -618,7 +620,7 @@ namespace {
       }
 
       errs() << "Graph:\n";
-      for (auto &edge : g_minus_back_plus_loop) {
+      for (auto &edge : g) {
         errs() << edge->from->getName() << " - " << edge->to->getName() << "\n";
       }
 

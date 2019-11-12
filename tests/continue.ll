@@ -16,6 +16,9 @@ bb:
   br label %bb3
 
 bb3:                                              ; preds = %bb17, %bb
+  %tmp18 = load i32, i32* %tmp1, align 4
+  %tmp19 = add nsw i32 %tmp18, 1
+  store i32 %tmp19, i32* %tmp1, align 4
   %tmp4 = load i32, i32* %tmp1, align 4
   %tmp5 = load i32, i32* %tmp, align 4
   %tmp6 = icmp slt i32 %tmp4, %tmp5
@@ -34,9 +37,6 @@ bb13:                                             ; preds = %bb7
   br label %bb17
 
 bb17:                                             ; preds = %bb13, %bb10
-  %tmp18 = load i32, i32* %tmp1, align 4
-  %tmp19 = add nsw i32 %tmp18, 1
-  store i32 %tmp19, i32* %tmp1, align 4
   br label %bb3
 
 bb20:                                             ; preds = %bb3
